@@ -1,36 +1,40 @@
-import mongodb from 'mongodb';
-import UserCollection from '../utils/users';
-import redisClient from '../utils/redis';
+/* eslint-disable import/no-named-as-default */
+import sha1 from 'sha1';
+import Queue from 'bull/lib/queue';
+import dbClient from '../utils/db';
 
-class UsersController {
+const userQueue = new Queue('email sending');
+
+export default class UsersController {
   static async postNew(req, res) {
-    const { email, password } = req.body;
+    const email = req.body ? req.body.email : null;
+    const password = req.body ? req.body.password : null;
+
     if (!email) {
-      return res.status(400).json({ error: 'Missing email' });
+      res.status(400).json({ error: 'Missing email' });
+      return;
     }
     if (!password) {
-      return res.status(400).json({ error: 'Missing password' });
+      res.status(400).json({ error: 'Missing password' });
+      return;
     }
-    const user = await UserCollection.getUser({ email });
-    if (user && user.length > 0) {
-      return res.status(400).json({ error: 'Already exists' });
+    const user = await (await dbClient.usersCollection()).findOne({ email });
+
+    if (user) {
+      res.status(400).json({ error: 'Already exist' });
+      return;
     }
-    const userId = await UserCollection.createUser({ email, password });
-    return res.status(201).json({ id: userId, email });
+    const insertionInfo = await (await dbClient.usersCollection())
+      .insertOne({ email, password: sha1(password) });
+    const userId = insertionInfo.insertedId.toString();
+
+    userQueue.add({ userId });
+    res.status(201).json({ email, id: userId });
   }
 
   static async getMe(req, res) {
-    const token = req.headers['x-token'];
-    const id = token ? await redisClient.get(`auth_${token}`) : null;
-    if (!id) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    const user = await UserCollection.getUser({
-      _id: mongodb.ObjectId(id),
-    });
-    return res.status(200).json({ id, email: user[0].email });
+    const { user } = req;
+
+    res.status(200).json({ email: user.email, id: user._id.toString() });
   }
 }
-
-export default UsersController;
-module.exports = UsersController;
